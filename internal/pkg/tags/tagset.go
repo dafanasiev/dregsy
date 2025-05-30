@@ -18,13 +18,13 @@ package tags
 
 import (
 	"fmt"
+	"github.com/blang/semver/v4"
+	log "github.com/sirupsen/logrus"
 	"sort"
 	"strconv"
 	"strings"
 
-	"github.com/blang/semver/v4"
-	log "github.com/sirupsen/logrus"
-
+	"github.com/grafana/sobek"
 	"github.com/xelalexv/dregsy/internal/pkg/util"
 )
 
@@ -32,20 +32,20 @@ import (
 const SemverPrefix = "semver:"
 const RegexpPrefix = "regex:"
 const KeepPrefix = "keep:"
+const JsPrefix = "js:"
 
-//
 var keepCount *util.Regex
+var jsVM *sobek.Runtime
 
-//
 func init() {
 	var err error
 	if keepCount, err = util.NewRegex(
 		"keep:[[:space:]]+latest[[:space:]]+[[:digit:]]+"); err != nil {
 		panic(fmt.Sprintf("invalid regex for keep latest: %v", err))
 	}
+	jsVM = nil
 }
 
-//
 func NewTagSet(tags []string) (*TagSet, error) {
 	ret := &TagSet{}
 	if err := ret.add(tags); err != nil {
@@ -54,12 +54,12 @@ func NewTagSet(tags []string) (*TagSet, error) {
 	return ret, nil
 }
 
-//
 type TagSet struct {
 	verbatim  []string
 	semver    []semver.Range
 	regex     []*util.Regex
 	keep      []*util.Regex
+	js        []*sobek.Program
 	keepCount int
 }
 
@@ -89,6 +89,11 @@ func (ts *TagSet) add(tags []string) error {
 
 		case isKeep(t):
 			if err := ts.addKeep(t); err != nil {
+				return err
+			}
+
+		case isJs(t):
+			if err := ts.addJs(t); err != nil {
 				return err
 			}
 
@@ -138,6 +143,20 @@ func (ts *TagSet) addKeep(k string) (err error) {
 }
 
 //
+func (ts *TagSet) addJs(k string) (err error) {
+	jsStr := strings.TrimSpace(k[len(JsPrefix):])
+	var js *sobek.Program
+	js, err = sobek.Compile("", jsStr, true)
+	if err == nil {
+		ts.js = append(ts.js, js)
+		if jsVM == nil {
+			jsVM = sobek.New()
+		}
+	}
+	return
+}
+
+//
 func (ts *TagSet) addFilter(regex, prefix string, list []*util.Regex) (
 	[]*util.Regex, error) {
 
@@ -151,7 +170,7 @@ func (ts *TagSet) addFilter(regex, prefix string, list []*util.Regex) (
 
 //
 func (ts *TagSet) IsEmpty() bool {
-	return !ts.HasVerbatim() && !ts.HasSemver() && !ts.HasRegex()
+	return !ts.HasVerbatim() && !ts.HasSemver() && !ts.HasRegex() && !ts.HasJs()
 }
 
 //
@@ -170,8 +189,12 @@ func (ts *TagSet) HasRegex() bool {
 }
 
 //
+func (ts *TagSet) HasJs() bool {
+	return ts.js != nil
+}
+
 func (ts *TagSet) NeedsExpansion() bool {
-	return ts.IsEmpty() || ts.HasSemver() || ts.HasRegex()
+	return ts.IsEmpty() || ts.HasSemver() || ts.HasRegex() || ts.HasJs()
 }
 
 //
@@ -187,7 +210,7 @@ func (ts *TagSet) Expand(lister func() ([]string, error)) ([]string, error) {
 				"failed listing tags during tag set expansion: %v", err)
 		}
 
-		if !ts.HasSemver() && !ts.HasRegex() { // tag set is completely empty
+		if !ts.HasSemver() && !ts.HasRegex() && !ts.HasJs() { // tag set is completely empty
 			addToSet(set, tags)
 
 		} else {
@@ -196,6 +219,9 @@ func (ts *TagSet) Expand(lister func() ([]string, error)) ([]string, error) {
 			}
 			if ts.HasRegex() {
 				addToSet(set, ts.expandRegex(tags))
+			}
+			if ts.HasJs() {
+				addToSet(set, ts.expandJs(tags))
 			}
 		}
 	}
@@ -321,6 +347,30 @@ func (ts *TagSet) expandRegex(tags []string) []string {
 }
 
 //
+func (ts *TagSet) expandJs(tags []string) []string {
+
+	var ret []string
+	for _, t := range tags {
+		for _, js := range ts.js {
+			err := jsVM.Set("tag", t)
+			if err != nil {
+				panic("failed to set tag in js vm: " + err.Error())
+			}
+			rv, err := jsVM.RunProgram(js)
+			if err != nil {
+				panic("failed to execute js program: " + err.Error())
+			}
+			if rv.ToBoolean() {
+				ret = append(ret, t)
+				break
+			}
+		}
+	}
+
+	log.Debugf("tags expanded from js: %v", ret)
+	return ret
+}
+
 func (ts *TagSet) keepTag(t string) bool {
 	for _, regex := range ts.keep {
 		if !regex.Matches(t) {
@@ -347,7 +397,10 @@ func isRegex(tag string) bool {
 	return strings.HasPrefix(tag, RegexpPrefix)
 }
 
-//
+func isJs(tag string) bool {
+	return strings.HasPrefix(tag, JsPrefix)
+}
+
 func isKeep(tag string) bool {
 	return strings.HasPrefix(tag, KeepPrefix)
 }
