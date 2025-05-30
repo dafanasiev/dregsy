@@ -31,16 +31,16 @@ import (
 
 const RelayID = "docker"
 
-//-
+// -
 type RelayConfig struct {
 	DockerHost string `yaml:"dockerhost"`
 	APIVersion string `yaml:"api-version"`
 }
 
-//-
+// -
 type Support struct{}
 
-//-
+// -
 func (s *Support) Platform(p string) error {
 	if p == "all" {
 		return fmt.Errorf(
@@ -49,12 +49,12 @@ func (s *Support) Platform(p string) error {
 	return nil
 }
 
-//-
+// -
 type DockerRelay struct {
 	client *dockerClient
 }
 
-//-
+// -
 func NewDockerRelay(conf *RelayConfig, out io.Writer) (*DockerRelay, error) {
 
 	relay := &DockerRelay{}
@@ -80,7 +80,7 @@ func NewDockerRelay(conf *RelayConfig, out io.Writer) (*DockerRelay, error) {
 	return relay, nil
 }
 
-//-
+// -
 func (r *DockerRelay) Prepare() error {
 
 	// when we begin, Docker daemon may not be ready yet, e.g. when dregsy runs
@@ -95,21 +95,23 @@ func (r *DockerRelay) Prepare() error {
 	return nil
 }
 
-//-
+// -
 func (r *DockerRelay) Dispose() error {
 	log.WithField("relay", RelayID).Info("disposing relay")
 	return r.client.close()
 }
 
-//-
-func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
-
+// -
+func (r *DockerRelay) Sync(opt *relays.SyncOptions) *relays.SyncResult {
 	log.WithFields(log.Fields{
 		"ref":      opt.SrcRef,
 		"platform": opt.Platform}).Info("pulling source image")
 
+	rv := &relays.SyncResult{Errors: make([]error, 0)}
+
 	if opt.Platform == "all" {
-		return fmt.Errorf("'Platform: all' sync option not supported")
+		rv.Errors = append(rv.Errors, fmt.Errorf("'Platform: all' sync option not supported"))
+		return rv
 	}
 
 	var tags []string
@@ -131,15 +133,16 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 		})
 
 		if err != nil {
-			return fmt.Errorf("error expanding tags: %v", err)
+			rv.Errors = append(rv.Errors, fmt.Errorf("error expanding tags: %v", err))
+			return rv
 		}
 	}
 
 	if len(tags) == 0 { // pull all tags
 		if err = r.pull(opt.SrcRef, opt.Platform, opt.SrcAuth,
 			true, opt.Verbose); err != nil {
-			return fmt.Errorf(
-				"error pulling source image '%s': %v", opt.SrcRef, err)
+			rv.Errors = append(rv.Errors, fmt.Errorf("error pulling source image '%s': %v", opt.SrcRef, err))
+			return rv
 		}
 
 	} else { // pull tag by tag; tags with digest are pulled by digest only
@@ -147,8 +150,8 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 			tagged, _ := util.JoinRefsAndTag(opt.SrcRef, "", tag)
 			if err = r.pull(tagged, opt.Platform, opt.SrcAuth,
 				false, opt.Verbose); err != nil {
-				return fmt.Errorf(
-					"error pulling source image '%s': %v", tagged, err)
+				rv.Errors = append(rv.Errors, fmt.Errorf("error pulling source image '%s': %v", tagged, err))
+				return rv
 			}
 		}
 	}
@@ -168,8 +171,8 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 	if len(tags) == 0 { // use all local images that match source reference
 		srcImages, err = r.list(opt.SrcRef)
 		if err != nil {
-			log.Errorf("error listing all tags of source image '%s': %v",
-				opt.SrcRef, err)
+			rv.Errors = append(rv.Errors, fmt.Errorf("error listing all tags of source image '%s': %v", opt.SrcRef, err))
+			log.Errorf("error listing all tags of source image '%s': %v", opt.SrcRef, err)
 		}
 
 	} else { // filter local images by source reference and tags
@@ -177,6 +180,7 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 			tagged := util.JoinRefAndTag(opt.SrcRef, tag)
 			imgs, err := r.list(tagged)
 			if err != nil {
+				rv.Errors = append(rv.Errors, fmt.Errorf("error listing source image '%s': %v", tagged, err))
 				log.Errorf("error listing source image '%s': %v", tagged, err)
 			}
 			srcImages = append(srcImages, imgs...)
@@ -191,7 +195,8 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 
 	// We now tag the source images for the target registry.
 	if err = r.tag(srcImages, opt.TrgtRef); err != nil {
-		return fmt.Errorf("error setting tags: %v", err)
+		rv.Errors = append(rv.Errors, fmt.Errorf("error setting tags: %v", err))
+		return rv
 	}
 
 	log.WithFields(log.Fields{
@@ -204,25 +209,26 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) error {
 	// FIXME: target tags should be removed to not interfere with tag count
 	//        limiting
 	//
-	if err := r.push(
+	if err = r.push(
 		opt.TrgtRef, opt.Platform, opt.TrgtAuth, opt.Verbose); err != nil {
-		return fmt.Errorf("error pushing target image: %v", err)
+		rv.Errors = append(rv.Errors, fmt.Errorf("error pushing target image: %v", err))
+		return rv
 	}
 
-	return nil
+	return rv
 }
 
-//-
+// -
 func (r *DockerRelay) pull(ref, platform, auth string, allTags, verbose bool) error {
 	return r.client.pullImage(ref, allTags, platform, auth, verbose)
 }
 
-//-
+// -
 func (r *DockerRelay) list(ref string) ([]*image, error) {
 	return r.client.listImages(ref)
 }
 
-//-
+// -
 func (r *DockerRelay) tag(images []*image, targetRef string) error {
 
 	for _, img := range images {
@@ -250,12 +256,12 @@ func (r *DockerRelay) tag(images []*image, targetRef string) error {
 	return nil
 }
 
-//-
+// -
 func (r *DockerRelay) push(ref, platform, auth string, verbose bool) error {
 	return r.client.pushImage(ref, true, platform, auth, verbose)
 }
 
-//-
+// -
 func tagFromDigest(d string) string {
 
 	if util.IsDigest(d) {

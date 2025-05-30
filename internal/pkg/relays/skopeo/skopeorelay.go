@@ -29,26 +29,21 @@ import (
 
 const RelayID = "skopeo"
 
-//
 type RelayConfig struct {
 	Binary   string `yaml:"binary"`
 	CertsDir string `yaml:"certs-dir"`
 }
 
-//
 type Support struct{}
 
-//
 func (s *Support) Platform(p string) error {
 	return nil
 }
 
-//
 type SkopeoRelay struct {
 	wrOut io.Writer
 }
 
-//
 func NewSkopeoRelay(conf *RelayConfig, out io.Writer) *SkopeoRelay {
 
 	relay := &SkopeoRelay{}
@@ -68,7 +63,6 @@ func NewSkopeoRelay(conf *RelayConfig, out io.Writer) *SkopeoRelay {
 	return relay
 }
 
-//
 func (r *SkopeoRelay) Prepare() error {
 
 	bufOut := new(bytes.Buffer)
@@ -82,14 +76,12 @@ func (r *SkopeoRelay) Prepare() error {
 	return nil
 }
 
-//
 func (r *SkopeoRelay) Dispose() error {
 	return nil
 }
 
-//
-func (r *SkopeoRelay) Sync(opt *relays.SyncOptions) error {
-
+func (r *SkopeoRelay) Sync(opt *relays.SyncOptions) *relays.SyncResult {
+	rv := &relays.SyncResult{Errors: make([]error, 0)}
 	srcCreds := util.DecodeJSONAuth(opt.SrcAuth)
 	destCreds := util.DecodeJSONAuth(opt.TrgtAuth)
 
@@ -129,10 +121,9 @@ func (r *SkopeoRelay) Sync(opt *relays.SyncOptions) error {
 	})
 
 	if err != nil {
-		return fmt.Errorf("error expanding tags: %v", err)
+		rv.Errors = append(rv.Errors, fmt.Errorf("error expanding tags: %v", err))
+		return rv
 	}
-
-	errs := false
 
 	for _, t := range tags {
 
@@ -151,15 +142,11 @@ func (r *SkopeoRelay) Sync(opt *relays.SyncOptions) error {
 			rc = addPlatformOverrides(rc, opt.Platform)
 		}
 
-		if err := runSkopeo(r.wrOut, r.wrOut, opt.Verbose, rc...); err != nil {
+		if err = runSkopeo(r.wrOut, r.wrOut, opt.Verbose, rc...); err != nil {
+			rv.Errors = append(rv.Errors, fmt.Errorf("error syncing tag %s: %w", t, err))
 			log.Error(err)
-			errs = true
 		}
 	}
 
-	if errs {
-		return fmt.Errorf("errors during sync")
-	}
-
-	return nil
+	return rv
 }

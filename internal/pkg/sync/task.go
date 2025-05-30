@@ -19,6 +19,8 @@ package sync
 import (
 	"errors"
 	"fmt"
+	"github.com/xelalexv/dregsy/internal/pkg/hooks"
+	"github.com/xelalexv/dregsy/internal/pkg/hooks/webhook"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -26,7 +28,6 @@ import (
 	"github.com/xelalexv/dregsy/internal/pkg/registry"
 )
 
-//
 type Task struct {
 	Name     string     `yaml:"name"`
 	Interval int        `yaml:"interval"`
@@ -34,17 +35,18 @@ type Task struct {
 	Target   *Location  `yaml:"target"`
 	Mappings []*Mapping `yaml:"mappings"`
 	Verbose  bool       `yaml:"verbose"`
+	WebHook  string     `yaml:"web_hook"`
 	//
 	repoList *registry.RepoList
 	ticker   *time.Ticker
 	lastTick time.Time
 	failed   bool
+	hook     hooks.Hook
 	//
 	exit chan bool
 	done chan bool
 }
 
-//
 func (t *Task) validate() error {
 
 	if len(t.Name) == 0 {
@@ -88,10 +90,18 @@ func (t *Task) validate() error {
 		}
 	}
 
+	if len(t.WebHook) > 0 {
+		var err error
+		t.hook, err = webhook.NewWebhook(t.WebHook)
+		if err != nil {
+			return fmt.Errorf(
+				"cannot create webhook for task '%s': %v", t.Name, err)
+		}
+	}
+
 	return nil
 }
 
-//
 func (t *Task) startTicking(c chan *Task) {
 
 	logger := log.WithField("task", t.Name)
@@ -127,7 +137,6 @@ func (t *Task) startTicking(c chan *Task) {
 	}()
 }
 
-//
 func (t *Task) tooSoon() bool {
 	i := time.Duration(t.Interval)
 	if i == 0 {
@@ -136,7 +145,6 @@ func (t *Task) tooSoon() bool {
 	return time.Now().Before(t.lastTick.Add(time.Second * i / 2))
 }
 
-//
 func (t *Task) stopTicking() {
 	if t.ticker != nil {
 		t.ticker.Stop()
@@ -146,12 +154,10 @@ func (t *Task) stopTicking() {
 	log.WithField("task", t.Name).Debug("task exited")
 }
 
-//
 func (t *Task) fail(f bool) {
 	t.failed = t.failed || f
 }
 
-//
 func (t *Task) mappingRefs(m *Mapping) ([][2]string, error) {
 
 	var ret [][2]string
@@ -183,7 +189,6 @@ func (t *Task) mappingRefs(m *Mapping) ([][2]string, error) {
 	return ret, nil
 }
 
-//
 func (t *Task) ensureTargetExists(ref string) error {
 	log.WithField("ref", ref).Debug("ensuring target exists")
 	if isEcr, pub, region, account := t.Target.GetECR(); isEcr {

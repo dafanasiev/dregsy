@@ -17,6 +17,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -31,21 +32,18 @@ import (
 	"github.com/xelalexv/dregsy/internal/pkg/util"
 )
 
-//
 type Relay interface {
 	Prepare() error
 	Dispose() error
-	Sync(opt *relays.SyncOptions) error
+	Sync(opt *relays.SyncOptions) *relays.SyncResult
 }
 
-//
 type Sync struct {
 	relay    Relay
 	shutdown chan bool
 	ticks    chan bool
 }
 
-//
 func New(conf *SyncConfig) (*Sync, error) {
 
 	sync := &Sync{}
@@ -82,13 +80,11 @@ func New(conf *SyncConfig) (*Sync, error) {
 	return sync, nil
 }
 
-//
 func (s *Sync) Shutdown() {
 	s.shutdown <- true
 	s.WaitForTick()
 }
 
-//
 func (s *Sync) tick() {
 	select {
 	case s.ticks <- true:
@@ -96,17 +92,14 @@ func (s *Sync) tick() {
 	}
 }
 
-//
 func (s *Sync) WaitForTick() {
 	<-s.ticks
 }
 
-//
 func (s *Sync) Dispose() {
 	s.relay.Dispose()
 }
 
-//
 func (s *Sync) SyncFromConfig(conf *SyncConfig, taskFilter string) (bool, error) {
 
 	if taskFilter == "" {
@@ -224,8 +217,22 @@ func (s *Sync) SyncFromConfig(conf *SyncConfig, taskFilter string) (bool, error)
 	return restart, nil
 }
 
-//
+type mappingRef struct {
+	Result *relays.SyncResult `json:"result"`
+}
+type taskResultMapping struct {
+	Refs []*mappingRef `json:"refs,omitempty"`
+}
+type taskResult struct {
+	Mapping []*taskResultMapping `json:"mapping,omitempty"`
+}
+
+func (tr *taskResult) EncodeJSON(js *json.Encoder) error {
+	return js.Encode(&taskResult{})
+}
+
 func (s *Sync) syncTask(t *Task) {
+	tr := &taskResult{}
 
 	if t.tooSoon() {
 		log.WithField("task", t.Name).Info("task fired too soon, skipping")
@@ -238,8 +245,10 @@ func (s *Sync) syncTask(t *Task) {
 		"target": t.Target.Registry}).Info("syncing task")
 	t.failed = false
 
+	tr.Mapping = make([]*taskResultMapping, 0, len(t.Mappings))
 	for _, m := range t.Mappings {
-
+		trm := &taskResultMapping{}
+		tr.Mapping = append(tr.Mapping, trm)
 		log.WithFields(log.Fields{"from": m.From, "to": m.To}).Info("mapping")
 
 		if err := t.Source.RefreshAuth(); err != nil {
@@ -260,18 +269,20 @@ func (s *Sync) syncTask(t *Task) {
 			continue
 		}
 
+		trm.Refs = make([]*mappingRef, 0, len(refs))
 		for _, ref := range refs {
-
+			trmr := &mappingRef{}
+			trm.Refs = append(trm.Refs, trmr)
 			src := ref[0]
 			trgt := ref[1]
 
-			if err := t.ensureTargetExists(trgt); err != nil {
+			if err = t.ensureTargetExists(trgt); err != nil {
 				log.Error(err)
 				t.fail(true)
 				break
 			}
 
-			if err := s.relay.Sync(&relays.SyncOptions{
+			syncResult := s.relay.Sync(&relays.SyncOptions{
 				SrcRef:            src,
 				SrcAuth:           t.Source.GetAuth(),
 				SrcSkipTLSVerify:  t.Source.SkipTLSVerify,
@@ -280,12 +291,22 @@ func (s *Sync) syncTask(t *Task) {
 				TrgtSkipTLSVerify: t.Target.SkipTLSVerify,
 				Tags:              m.tagSet,
 				Platform:          m.Platform,
-				Verbose:           t.Verbose}); err != nil {
-				log.Error(err)
+				Verbose:           t.Verbose})
+
+			if syncResult == nil {
+				panic("relay.Sync returns nil")
+			}
+
+			syncResultErrs := syncResult.Err()
+			if len(syncResultErrs) > 0 {
+				log.WithField(log.ErrorKey, syncResultErrs).Error("errors occurred while sync")
 				t.fail(true)
 			}
+			trmr.Result = syncResult
 		}
 	}
+
+	t.hook.OnSyncFinished(tr)
 
 	t.lastTick = time.Now()
 }
