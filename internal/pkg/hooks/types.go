@@ -1,9 +1,7 @@
 package hooks
 
-import "encoding/json"
-
 type SyncResult interface {
-	EncodeJSON(js *json.Encoder) error
+	MarshalJSON() ([]byte, error)
 }
 
 type Hook interface {

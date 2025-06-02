@@ -217,22 +217,43 @@ func (s *Sync) SyncFromConfig(conf *SyncConfig, taskFilter string) (bool, error)
 	return restart, nil
 }
 
-type mappingRef struct {
+type taskResultMappingRef struct {
+	Src    string             `json:"src"`
+	Trgt   string             `json:"trgt"`
 	Result *relays.SyncResult `json:"result"`
 }
 type taskResultMapping struct {
-	Refs []*mappingRef `json:"refs,omitempty"`
+	Refs []*taskResultMappingRef `json:"refs,omitempty"`
 }
+
+type taskResultTaskState string
+
+const taskResultTaskState_OK taskResultTaskState = "ok"
+const taskResultTaskState_FAILED taskResultTaskState = "failed"
+
+type taskResultTask struct {
+	Name  string `json:"name"`
+	State taskResultTaskState
+}
+
 type taskResult struct {
+	Task    *taskResultTask      `json:"task"`
 	Mapping []*taskResultMapping `json:"mapping,omitempty"`
 }
 
-func (tr *taskResult) EncodeJSON(js *json.Encoder) error {
-	return js.Encode(&taskResult{})
+func (tr *taskResult) MarshalJSON() ([]byte, error) {
+	fmt.Printf("HER")
+	type tmpt taskResult
+	tmp := tmpt(*tr)
+	return json.Marshal(tmp)
 }
 
 func (s *Sync) syncTask(t *Task) {
-	tr := &taskResult{}
+	tr := &taskResult{
+		Task: &taskResultTask{
+			Name: t.Name,
+		},
+	}
 
 	if t.tooSoon() {
 		log.WithField("task", t.Name).Info("task fired too soon, skipping")
@@ -269,9 +290,12 @@ func (s *Sync) syncTask(t *Task) {
 			continue
 		}
 
-		trm.Refs = make([]*mappingRef, 0, len(refs))
+		trm.Refs = make([]*taskResultMappingRef, 0, len(refs))
 		for _, ref := range refs {
-			trmr := &mappingRef{}
+			trmr := &taskResultMappingRef{
+				Src:  ref[0],
+				Trgt: ref[1],
+			}
 			trm.Refs = append(trm.Refs, trmr)
 			src := ref[0]
 			trgt := ref[1]
@@ -304,6 +328,12 @@ func (s *Sync) syncTask(t *Task) {
 			}
 			trmr.Result = syncResult
 		}
+	}
+
+	if t.failed {
+		tr.Task.State = taskResultTaskState_FAILED
+	} else {
+		tr.Task.State = taskResultTaskState_OK
 	}
 
 	t.hook.OnSyncFinished(tr)

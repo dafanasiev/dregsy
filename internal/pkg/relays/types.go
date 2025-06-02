@@ -17,36 +17,52 @@
 package relays
 
 import (
+	"bytes"
 	"encoding/json"
+	"github.com/pkg/errors"
 	"github.com/xelalexv/dregsy/internal/pkg/tags"
 )
 
+type SyncResultErrors []error
+
+func (sre SyncResultErrors) MarshalJSON() ([]byte, error) {
+	if len(sre) == 0 {
+		return []byte("[]"), nil
+	}
+
+	rv := bytes.NewBuffer(nil)
+	js := json.NewEncoder(rv)
+	rv.WriteByte('[')
+	for i, e := range sre {
+		if i > 0 {
+			rv.WriteByte(',')
+		}
+		switch e.(type) {
+		case json.Marshaler:
+			m, err := e.(json.Marshaler).MarshalJSON()
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to marshal JSON error (using json.Marshaler)")
+			}
+			rv.Write(m)
+			break
+		default:
+			err := js.Encode(e.Error())
+			if err != nil {
+				return nil, errors.Wrap(err, "unable to marshal JSON error")
+			}
+		}
+	}
+	rv.WriteByte(']')
+
+	return rv.Bytes(), nil
+}
+
 type SyncResult struct {
-	Errors []error
+	Errors SyncResultErrors `json:"errors,omitempty"`
 }
 
-func (r *SyncResult) EncodeJSON(js *json.Encoder) error {
-	errs2strings := func(errors []error) []string {
-		if errors == nil {
-			return nil
-		}
-		s := make([]string, len(errors))
-		for i, err := range errors {
-			s[i] = err.Error()
-		}
-		return s
-	}
-
-	m := make(map[string]interface{}, 1)
-	if errors := errs2strings(r.Errors); errors != nil {
-		m["errors"] = errors
-	}
-
-	return js.Encode(m)
-}
-
-func (r *SyncResult) Err() []error {
-	return r.Errors
+func (sr *SyncResult) Err() []error {
+	return sr.Errors
 }
 
 type SyncOptions struct {

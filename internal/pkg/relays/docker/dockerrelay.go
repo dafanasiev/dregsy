@@ -194,7 +194,7 @@ func (r *DockerRelay) Sync(opt *relays.SyncOptions) *relays.SyncResult {
 	log.WithField("ref", opt.TrgtRef).Info("setting tags for target image")
 
 	// We now tag the source images for the target registry.
-	if err = r.tag(srcImages, opt.TrgtRef); err != nil {
+	if tagged, err := r.tag(srcImages, opt.TrgtRef); err != nil {
 		rv.Errors = append(rv.Errors, fmt.Errorf("error setting tags: %v", err))
 		return rv
 	}
@@ -229,9 +229,15 @@ func (r *DockerRelay) list(ref string) ([]*image, error) {
 }
 
 // -
-func (r *DockerRelay) tag(images []*image, targetRef string) error {
-
+func (r *DockerRelay) tag(images []*image, targetRef string) ([]*taggedImage, error) {
+	rv := make([]*taggedImage, 0, len(images))
 	for _, img := range images {
+		ti := &taggedImage{
+			image: img,
+			tags:  make([]string, 0, len(img.tags)),
+			err:   nil,
+		}
+		rv = append(rv, ti)
 		for _, tag := range img.tags {
 			if tag != "" {
 				n, d := util.SplitTag(tag)
@@ -247,13 +253,15 @@ func (r *DockerRelay) tag(images []*image, targetRef string) error {
 
 				if err := r.client.tagImage(
 					img.id, fmt.Sprintf("%s:%s", targetRef, n)); err != nil {
-					return err
+					ti.err = err
+					return rv, err
 				}
+				ti.tags = append(ti.tags, n)
 			}
 		}
 	}
 
-	return nil
+	return rv, nil
 }
 
 // -
